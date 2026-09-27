@@ -1,0 +1,109 @@
+{
+    "enable_plugin": {
+        "description": "启用插件功能",
+        "type": "bool",
+        "hint": "全局控制插件是否响应用户请求，关闭后只有Bot管理员能通过私聊使用开关命令",
+        "default": true
+    },
+    "trigger_prefix": {
+        "description": "表情触发前缀",
+        "type": "string",
+        "hint": "留空表示直接发送关键词即可触发；填写后，只有带此前缀的表情关键词才会生成。建议不要与 AstrBot 全局唤醒前缀使用相同值，尤其不建议直接使用 /，否则消息可能优先进入 AstrBot 对话流程而不是本插件，例如填写 # 后需使用 #摸头",
+        "default": ""
+    },
+    "cooldown_seconds": {
+        "description": "用户冷却时间(秒)",
+        "type": "int",
+        "hint": "单个用户连续生成表情包的最小间隔时间",
+        "default": 3,
+        "min": 0,
+        "max": 60
+    },
+    "generation_timeout": {
+        "description": "生成超时时间(秒)",
+        "type": "int",
+        "hint": "单个表情包生成的最大等待时间，超时将取消生成",
+        "default": 30,
+        "min": 5,
+        "max": 120
+    },
+    "enable_avatar_cache": {
+        "description": "启用头像缓存",
+        "type": "bool",
+        "hint": "缓存用户头像以提升生成速度",
+        "default": true
+    },
+    "cache_expire_hours": {
+        "description": "缓存过期时间(小时)",
+        "type": "int",
+        "hint": "头像缓存的有效期",
+        "default": 24,
+        "min": 1,
+        "max": 168
+    },
+    "disabled_templates": {
+        "description": "禁用列表",
+        "type": "list",
+        "hint": "管理员可将不适合当前环境的表情包模板添加到此列表中禁用",
+        "default": []
+    },
+    "enable_poke_response": {
+        "description": "戳一戳随机表情",
+        "type": "bool",
+        "hint": "收到目标为机器人的戳一戳时，随机发送一张可由戳者头像和昵称生成的表情；沿用用户生成冷却时间",
+        "default": false
+    },
+    "poke_response_any_target": {
+        "description": "任意戳一戳也响应",
+        "type": "bool",
+        "hint": "开启后，不再校验戳一戳的目标是否为机器人；群成员互相戳一戳也会触发随机表情",
+        "default": false
+    },
+    "gif_enable_toolbox": {
+        "description": "启用 GIF 工具箱",
+        "type": "bool",
+        "hint": "控制变速/加速/减速/倒放/分解/裁剪/线稿/做旧/表情合成/视频转gif 这批指令，无需唤醒前缀即可裸发触发。因为用的是短中文词，拆开、慢放、合成这类词可能和你的表情模板关键词撞车；关闭后这些词会重新回到表情生成流程",
+        "default": true
+    },
+    "gif_output_format": {
+        "description": "动图输出格式",
+        "type": "string",
+        "hint": "GIF 兼容性最好；APNG 画质与透明度更好；WEBP 体积最小",
+        "enum": ["GIF", "APNG", "WEBP"],
+        "default": "GIF"
+    },
+    "gif_default_scale": {
+        "description": "视频转动图默认缩放比例(0.1-1.0)",
+        "type": "float",
+        "hint": "越小体积越小、画质也越糊",
+        "default": 0.3
+    },
+    "gif_default_fps": {
+        "description": "视频转动图默认帧率",
+        "type": "int",
+        "hint": "调高更流畅但体积更大",
+        "default": 10,
+        "min": 1,
+        "max": 60
+    },
+    "gif_max_duration": {
+        "description": "允许截取视频的最大时长(秒)",
+        "type": "float",
+        "hint": "比如填 10，最长只截取 10 秒，超出部分丢弃",
+        "default": 10.0
+    },
+    "gif_max_video_size_mb": {
+        "description": "允许处理的视频最大体积(MB)",
+        "type": "float",
+        "hint": "超过这个大小的视频会被拒绝下载，避免吃满内存和带宽",
+        "default": 50.0
+    },
+    "gif_max_colors": {
+        "description": "GIF 最大颜色数量(2-256)",
+        "type": "int",
+        "hint": "仅在输出格式为 GIF 时生效。调小能显著减小体积，但可能出现色带或噪点；256 为不限制",
+        "default": 256,
+        "min": 2,
+        "max": 256
+    }
+}

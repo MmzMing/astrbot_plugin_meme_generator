@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Meme Lab · 运行面板</title><link rel="stylesheet" href="../css/meme_ui.css">
+</head>
+<body><main class="canvas">
+    <header class="masthead status-head">
+        <div class="brand-mark" aria-hidden="true"><svg viewBox="0 0 64 64"><path d="M12 47V31h10v16zm15 0V18h10v29zm15 0V26h10v21z"/></svg></div>
+        <div class="mast-copy"><div class="kicker">SYSTEM / LIVE REPORT</div><h1>运行状态面板</h1><p>资源、开关与性能参数的即时快照。</p></div>
+        <div class="edition"><span>VERSION</span><strong>{{ version }}</strong><small>BY {{ author }}</small></div>
+    </header>
+    <section class="metric-hero">
+        <article><span>模板总量</span><strong>{{ total_templates }}</strong><small>READY TO USE</small></article>
+        <article><span>触发关键词</span><strong>{{ total_keywords }}</strong><small>INDEXED</small></article>
+        <article><span>禁用模板</span><strong>{{ disabled_templates_count }}</strong><small>BLOCKED</small></article>
+    </section>
+    <section class="manual-section">
+        <div class="section-label compact"><span>01</span><div><h2>服务状态</h2><p>核心功能健康度</p></div></div>
+        <div class="health-grid">
+            <article class="health-card {{ 'is-on' if plugin_enabled else 'is-off' }}"><div class="health-top"><span class="signal"></span><b>生成服务</b><em>{{ 'ONLINE' if plugin_enabled else 'OFFLINE' }}</em></div><strong>{{ '正常响应' if plugin_enabled else '已停止' }}</strong><p>控制插件是否处理普通表情生成请求。</p></article>
+            <article class="health-card {{ 'is-on' if avatar_cache_enabled else 'is-off' }}"><div class="health-top"><span class="signal"></span><b>头像缓存</b><em>{{ 'ONLINE' if avatar_cache_enabled else 'OFFLINE' }}</em></div><strong>{{ '缓存开启' if avatar_cache_enabled else '缓存关闭' }}</strong><p>缓存开启可减少重复头像下载与等待时间。</p></article>
+        </div>
+    </section>
+    <section class="manual-section">
+        <div class="section-label compact"><span>02</span><div><h2>当前配置</h2><p>影响触发与生成体验</p></div></div>
+        <div class="config-board">
+            <article><span>触发前缀</span><strong>{{ trigger_prefix if trigger_prefix else '无' }}</strong><small>TRIGGER</small></article>
+            <article><span>冷却时间</span><strong>{{ cooldown_seconds }}<i>秒</i></strong><small>COOLDOWN</small></article>
+            <article><span>生成超时</span><strong>{{ generation_timeout }}<i>秒</i></strong><small>TIMEOUT</small></article>
+            <article><span>缓存有效期</span><strong>{{ cache_expire_hours }}<i>时</i></strong><small>CACHE TTL</small></article>
+        </div>
+    </section>
+    <footer class="footer-note"><span>LIVE</span><p>数据来自插件当前运行实例。</p><strong>astrbot_plugin_meme_generator</strong></footer>
+</main></body></html>

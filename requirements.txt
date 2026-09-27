@@ -1,0 +1,9 @@
+meme_generator==0.2.3
+
+# GIF 工具箱：图像与网络基础依赖，AstrBot 运行环境通常已内置，此处显式声明以防缺漏
+Pillow
+aiohttp
+
+# 仅「视频转gif」需要，且依赖 ffmpeg；缺失时该指令不可用（日志会有告警），其余功能不受影响
+imageio
+imageio-ffmpeg
