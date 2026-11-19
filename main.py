@@ -50,42 +50,87 @@ STATIC_DATA_DIR = STATIC_DIR / "data"
 
 # GIF 工具箱的意图表。AstrBot 的 CommandFilter 要求 event.is_at_or_wake_command
 # （必须带唤醒前缀或 @机器人），而 RegexFilter 不受 wake_prefix 制约，所以这批指令
-# 全部走正则：裸发「加速5」也能触发，带前缀或自然说法同样命中。
-# 列表顺序就是优先级，长形态必须排在短形态之前。
-_WAKE_PREFIX = r"^\s*[/#>›]?\s*(?:@\S+\s*)?(?:请|帮我|帮忙|麻烦)?\s*(?:把|将)?\s*(?:这个|这张|那张)?\s*"
-
+# 全部走正则：裸发「加速5」也能触发，带前缀同样命中。
+#
+# 每个意图只留一个规范词：口语变体（快进、慢放、拆帧、电子包浆…）不再收进来，
+# 否则群里随口说一句「这视频快进了」就会被当成指令。列表顺序即优先级。
 _TOOLBOX_INTENTS = [
-    (r"视频\s*转\s*(?:成|为|换)?\s*(?:gif|动图|图)", "video"),
-    (r"(?:图片?|照片)?\s*(?:转|画|变|生成|做成)?\s*(?:成|为)?\s*(?:线稿|素描)", "lineart"),
-    (r"(?:表情包?|表情|动图|图)?\s*(?:做旧|做古|变旧|电子包浆)", "age"),
-    (r"(?:表情包?|表情|动图|图)?\s*(?:合成|拼接|接成一条|拼成一条|连成一条)", "concat"),
-    (r"(?:gif|动图)?\s*(?:分解|拆帧|逐帧|拆开|拆成?单帧)", "decompose"),
-    (r"(?:gif|动图)?\s*(?:倒放|倒着(?:放|播)|反过来(?:放|播)|反向(?:放|播))", "reverse"),
-    (r"(?:gif|动图|图片)?\s*(?:裁剪|切图|网格切|切成?\s*\d+\s*[*x×]\s*\d+)", "crop"),
-    (r"\d+(?:\.\d+)?\s*(?:fps|帧率)\s*(?:变速|加速|调速)", "speed"),
-    (r"(?:gif|动图)?\s*(?:变速|调速|改速度)", "speed"),
-    (r"\d+(?:\.\d+)?\s*(?:倍速|倍|[xX×])\s*(?:加速|快进|调快)", "accelerate"),
-    (r"(?:gif|动图)?\s*(?:加速|快进|变快|调快)", "accelerate"),
-    (r"\d+(?:\.\d+)?\s*(?:倍速|倍|[xX×])\s*(?:减速|慢放|放慢|调慢)", "decelerate"),
-    (r"(?:gif|动图)?\s*(?:减速|慢放|放慢|变慢|调慢)", "decelerate"),
-    # 只说「3倍速」也算变速：必须排在带方向词的形态之后，避免抢走「3倍加速」。
-    (r"\d+(?:\.\d+)?\s*(?:倍速|[xX×])", "speed"),
+    (r"视频\s*转\s*(?:成|为)?\s*(?:gif|动图)", "video"),
+    (r"线稿", "lineart"),
+    (r"做旧", "age"),
+    (r"合成", "concat"),
+    (r"分解", "decompose"),
+    (r"倒放", "reverse"),
+    (r"裁剪", "crop"),
+    (r"变速", "speed"),
+    (r"(?:\d+(?:\.\d+)?\s*倍)?\s*加速", "accelerate"),
+    (r"(?:\d+(?:\.\d+)?\s*倍)?\s*减速", "decelerate"),
 ]
-_TOOLBOX_PATTERNS = [
-    (re.compile(_WAKE_PREFIX + body, re.IGNORECASE), intent)
+
+# 显式指令：开头就是规范词。是否「显式」由 _is_explicit_command 判断——群聊里
+# 走了唤醒前缀或 @机器人，私聊里带了前缀也算。语义关闭时只认这种写法。
+_STRICT_PREFIX = r"^\s*(?:[/#>›]\s*)?"
+# 自然语言：前缀、@、填充词都可以省略，只要开头是规范词就触发。
+_SEMANTIC_PREFIX = (
+    r"^\s*(?:[/#>›]\s*)?(?:@\S+\s*)?"
+    r"(?:请|帮我|帮忙|麻烦)?\s*(?:把|将)?\s*(?:这个|这张|那张)?\s*"
+)
+
+_TOOLBOX_INTENTS_BODY = "|".join(body for body, _ in _TOOLBOX_INTENTS)
+_COMMAND_PATTERNS = [
+    (re.compile(_STRICT_PREFIX + body, re.IGNORECASE), intent)
     for body, intent in _TOOLBOX_INTENTS
 ]
-# 只要任一意图能命中，这条消息就归工具箱，不能再进表情生成流程。
+_SEMANTIC_PATTERNS = [
+    (re.compile(_SEMANTIC_PREFIX + body, re.IGNORECASE), intent)
+    for body, intent in _TOOLBOX_INTENTS
+]
+# 过滤器只负责把消息拦进分发器，具体走指令还是自然语言由 _match_toolbox_intent 判断。
 _TOOLBOX_ANY = re.compile(
-    _WAKE_PREFIX + "(?:" + "|".join(body for body, _ in _TOOLBOX_INTENTS) + ")",
+    _SEMANTIC_PREFIX + "(?:" + _TOOLBOX_INTENTS_BODY + ")",
     re.IGNORECASE,
 )
 
 
-def _match_toolbox_intent(message: str) -> str | None:
-    for pattern, intent in _TOOLBOX_PATTERNS:
-        if pattern.search(message or ""):
-            return intent
+def _is_explicit_command(event: AstrMessageEvent) -> bool:
+    """这次触发是否走的是唤醒路径（唤醒前缀或 @机器人）。
+
+    AstrBot 在唤醒阶段就把唤醒前缀从 message_str 里剥掉了，不能再靠它判断：
+    群聊看 is_at_or_wake_command；私聊默认全部唤醒，这个标记恒为 True，只能回
+    消息链里的原始文本确认有没有前缀。
+    """
+    if not event.is_private_chat():
+        return bool(event.is_at_or_wake_command)
+
+    self_id = str(event.get_self_id() or "").strip()
+    for component in event.get_messages():
+        if isinstance(component, Comp.At):
+            if str(getattr(component, "qq", "") or "").strip() == self_id:
+                return True
+            continue
+        if isinstance(component, Comp.Plain):
+            return bool(re.match(r"^\s*[/#>›]", component.text or ""))
+    return False
+
+
+def _match_toolbox_intent(
+    message: str, semantic_enabled: bool = True, explicit: bool = False
+) -> tuple[str, bool] | None:
+    """返回 (意图, 是否自然语言触发)；没命中返回 None。
+
+    显式指令永远优先。语义关闭后只认显式指令，裸发的短词交还给表情生成流程，
+    避免「合成」「分解」这类词在闲聊里被工具箱抢走。
+    """
+    text = message or ""
+    if explicit:
+        for pattern, intent in _COMMAND_PATTERNS:
+            if pattern.search(text):
+                return intent, False
+    if not semantic_enabled:
+        return None
+    for pattern, intent in _SEMANTIC_PATTERNS:
+        if pattern.search(text):
+            return intent, True
     return None
 
 
@@ -162,6 +207,7 @@ class MemeConfig:
             "poke_response_any_target", False
         )
         self.gif_enable_toolbox: bool = self.config.get("gif_enable_toolbox", True)
+        self.gif_enable_semantic: bool = self.config.get("gif_enable_semantic", True)
         self.gif_output_format: str = gif_toolbox.normalize_format(
             str(self.config.get("gif_output_format", "GIF"))
         )
@@ -755,20 +801,33 @@ class MemeGeneratorPlugin(Star):
             return
         yield event.chain_result(chain)
 
-    async def _load_image(self, event: AstrMessageEvent, action: str) -> bytes:
-        """取出本次指令要处理的图片；拿不到时抛出 GifToolboxError。"""
+    async def _load_image(
+        self, event: AstrMessageEvent, action: str, semantic: bool = False
+    ) -> bytes | None:
+        """取出本次指令要处理的图片。
+
+        自然语言触发（例如聊天里只说了「加速」）没带图片时返回 None，由调用方
+        静默跳过：这种消息大概率不是要给机器人下指令，回一句「请发送图片」反而
+        是在打搅聊天。显式指令没带图片才提示用法。
+        """
         ref = await media_source.first_image_ref(event)
         if not ref:
+            if semantic:
+                return None
             raise GifToolboxError(f"没有收到图片，请发送或引用一张图片后再执行「{action}」")
         data = await media_source.download(ref)
         if not data:
             raise GifToolboxError("图片下载失败，请确认图片仍可访问")
         return data
 
-    async def _run_image_job(self, event: AstrMessageEvent, action: str, worker):
+    async def _run_image_job(
+        self, event: AstrMessageEvent, action: str, worker, semantic: bool = False
+    ):
         """下载一张图片 → 线程池中执行 worker → 只回发结果图。"""
         try:
-            data = await self._load_image(event, action)
+            data = await self._load_image(event, action, semantic)
+            if data is None:
+                return
             image = await asyncio.to_thread(worker, data)
         except GifToolboxError as exc:
             yield event.plain_result(str(exc))
@@ -779,10 +838,14 @@ class MemeGeneratorPlugin(Star):
             return
         yield event.chain_result([Comp.Image.fromBytes(image)])
 
-    async def _run_frames_job(self, event: AstrMessageEvent, action: str, worker):
+    async def _run_frames_job(
+        self, event: AstrMessageEvent, action: str, worker, semantic: bool = False
+    ):
         """下载一张图片 → 线程池中拆成多张结果图 → 合并转发发送。"""
         try:
-            data = await self._load_image(event, action)
+            data = await self._load_image(event, action, semantic)
+            if data is None:
+                return
             pieces = await asyncio.to_thread(worker, data)
         except GifToolboxError as exc:
             yield event.plain_result(str(exc))
@@ -807,14 +870,19 @@ class MemeGeneratorPlugin(Star):
         """GIF 工具箱统一入口。
 
         用正则而不是 @filter.command：CommandFilter 要求消息带唤醒前缀或 @机器人，
-        正则过滤器不受 wake_prefix 制约，所以「加速5」「gif倒放」「帮我3倍速」
-        这类裸发写法也能触发。
+        正则过滤器不受 wake_prefix 制约，所以带前缀的指令和裸发的自然语言都能进到
+        这里，再由 _match_toolbox_intent 按语义开关决定放不放行。
         """
         if not self.meme_config.gif_enable_toolbox:
             return
-        intent = _match_toolbox_intent(event.message_str)
-        if intent is None:
+        matched = _match_toolbox_intent(
+            event.message_str,
+            self.meme_config.gif_enable_semantic,
+            _is_explicit_command(event),
+        )
+        if matched is None:
             return
+        intent, semantic = matched
         implementations = {
             "video": self._toolbox_video,
             "lineart": self._toolbox_lineart,
@@ -827,10 +895,10 @@ class MemeGeneratorPlugin(Star):
             "accelerate": self._toolbox_accelerate,
             "decelerate": self._toolbox_decelerate,
         }
-        async for result in implementations[intent](event):
+        async for result in implementations[intent](event, semantic):
             yield result
 
-    async def _toolbox_speed(self, event: AstrMessageEvent):
+    async def _toolbox_speed(self, event: AstrMessageEvent, semantic: bool = False):
         """动图变速：变速 2x 为 2 倍速，变速 30fps 为指定帧率"""
         text = event.message_str
         fps = re.search(r"(\d+(?:\.\d+)?)\s*(?:fps|帧率|帧)", text, re.IGNORECASE)
@@ -843,40 +911,44 @@ class MemeGeneratorPlugin(Star):
             value, is_fps_mode = _first_number(text, 2.0), False
 
         async for result in self._run_image_job(
-            event, "变速", self._speed_worker(value, is_fps_mode)
+            event, "变速", self._speed_worker(value, is_fps_mode), semantic
         ):
             yield result
 
-    async def _toolbox_accelerate(self, event: AstrMessageEvent):
+    async def _toolbox_accelerate(self, event: AstrMessageEvent, semantic: bool = False):
         """动图加速：加速 5 / 5倍加速 都表示 5 倍速，默认 2 倍速"""
         factor = _first_number(event.message_str, 2.0)
         if factor <= 0:
             yield event.plain_result("加速倍数必须大于 0")
             return
         async for result in self._run_image_job(
-            event, "加速", self._speed_worker(factor, False)
+            event, "加速", self._speed_worker(factor, False), semantic
         ):
             yield result
 
-    async def _toolbox_decelerate(self, event: AstrMessageEvent):
-        """动图减速：减速 3 / 3倍慢放 都表示放慢到 1/3，默认 2 倍慢放"""
+    async def _toolbox_decelerate(self, event: AstrMessageEvent, semantic: bool = False):
+        """动图减速：减速 3 / 3倍减速 都表示放慢到 1/3，默认 2 倍慢放"""
         factor = _first_number(event.message_str, 2.0)
         if factor <= 0:
             yield event.plain_result("减速倍数必须大于 0")
             return
         async for result in self._run_image_job(
-            event, "减速", self._speed_worker(1.0 / factor, False)
+            event, "减速", self._speed_worker(1.0 / factor, False), semantic
         ):
             yield result
 
-    async def _toolbox_reverse(self, event: AstrMessageEvent):
+    async def _toolbox_reverse(self, event: AstrMessageEvent, semantic: bool = False):
         """动图倒放"""
-        async for result in self._run_image_job(event, "倒放", gif_toolbox.reverse_gif):
+        async for result in self._run_image_job(
+            event, "倒放", gif_toolbox.reverse_gif, semantic
+        ):
             yield result
 
-    async def _toolbox_decompose(self, event: AstrMessageEvent):
+    async def _toolbox_decompose(self, event: AstrMessageEvent, semantic: bool = False):
         """把动图拆成逐帧图片，以合并转发发送"""
-        async for result in self._run_frames_job(event, "分解", self._decompose_worker):
+        async for result in self._run_frames_job(
+            event, "分解", self._decompose_worker, semantic
+        ):
             yield result
 
     @staticmethod
@@ -886,13 +958,15 @@ class MemeGeneratorPlugin(Star):
             for index, piece in enumerate(gif_toolbox.decompose_gif(data), 1)
         ]
 
-    async def _toolbox_crop(self, event: AstrMessageEvent):
+    async def _toolbox_crop(self, event: AstrMessageEvent, semantic: bool = False):
         """网格裁剪：裁剪 3x4，可附「边距上20」一类参数先裁边"""
         clean_text, margins = gif_toolbox.parse_margins(event.message_str)
         rows, cols = gif_toolbox.parse_grid(clean_text)
 
         try:
-            data = await self._load_image(event, "裁剪")
+            data = await self._load_image(event, "裁剪", semantic)
+            if data is None:
+                return
             pieces = await asyncio.to_thread(
                 gif_toolbox.crop_grid, data, rows, cols, margins
             )
@@ -908,26 +982,28 @@ class MemeGeneratorPlugin(Star):
         async for result in self._send_forward(event, "裁剪", contents):
             yield result
 
-    async def _toolbox_lineart(self, event: AstrMessageEvent):
+    async def _toolbox_lineart(self, event: AstrMessageEvent, semantic: bool = False):
         """把图片转成素描线稿"""
         async for result in self._run_image_job(
-            event, "线稿转换", gif_toolbox.to_line_art
+            event, "线稿转换", gif_toolbox.to_line_art, semantic
         ):
             yield result
 
-    async def _toolbox_age(self, event: AstrMessageEvent):
+    async def _toolbox_age(self, event: AstrMessageEvent, semantic: bool = False):
         """表情包做旧：做旧 10 表示处理 10 轮，数字越大越绿越糊（1~50）"""
         times = int(_first_number(event.message_str, 5))
         async for result in self._run_image_job(
-            event, "做旧", lambda data: gif_toolbox.age_meme(data, times)
+            event, "做旧", lambda data: gif_toolbox.age_meme(data, times), semantic
         ):
             yield result
 
-    async def _toolbox_concat(self, event: AstrMessageEvent):
+    async def _toolbox_concat(self, event: AstrMessageEvent, semantic: bool = False):
         """表情合成：把多张表情按顺序接成一条动图，动图沿用各自原速"""
         duration = _parse_frame_duration(event.message_str)
         refs = await media_source.all_image_refs(event)
         if not refs:
+            if semantic:
+                return
             yield event.plain_result(
                 "没有收到图片。可以把多张图一起发送、引用含图消息，或使用合并转发"
             )
@@ -956,8 +1032,15 @@ class MemeGeneratorPlugin(Star):
             return
         yield event.chain_result([Comp.Image.fromBytes(image)])
 
-    async def _toolbox_video(self, event: AstrMessageEvent):
+    async def _toolbox_video(self, event: AstrMessageEvent, semantic: bool = False):
         """视频转动图：视频转gif 1s-5.5s fps 10 0.5"""
+        source = media_source.video_source(event)
+        if not source:
+            if semantic:
+                return
+            yield event.plain_result("没有收到视频，请回复一条视频消息或附上视频链接")
+            return
+
         if not gif_toolbox.is_video_supported():
             yield event.plain_result(
                 "缺少 imageio 依赖，无法转换视频。请执行：pip install imageio imageio-ffmpeg"
@@ -966,10 +1049,6 @@ class MemeGeneratorPlugin(Star):
 
         options = self.meme_config.gif_video_options()
         params = gif_toolbox.parse_video_args(event.message_str, options)
-        source = media_source.video_source(event)
-        if not source:
-            yield event.plain_result("没有收到视频，请回复一条视频消息或附上视频链接")
-            return
 
         if not source.startswith("http") and not os.path.exists(source):
             source = await media_source.resolve_file_id(event, source)
@@ -1029,8 +1108,12 @@ class MemeGeneratorPlugin(Star):
                 return
 
         # GIF 工具箱由正则分发器接管，命中意图时不能再进表情生成流程。
-        # 工具箱关闭时这里放行，短词于是恢复成普通的表情关键词。
-        if self.meme_config.gif_enable_toolbox and _TOOLBOX_ANY.search(message_str):
+        # 工具箱或自然语言识别关闭时这里放行，短词于是恢复成普通的表情关键词。
+        if self.meme_config.gif_enable_toolbox and _match_toolbox_intent(
+            message_str,
+            self.meme_config.gif_enable_semantic,
+            _is_explicit_command(event),
+        ):
             return
 
         # 检查插件是否启用
