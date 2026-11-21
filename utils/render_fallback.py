@@ -87,6 +87,12 @@ def format_plugin_status_text(template_data: dict[str, Any]) -> str:
         "运行状态：",
         f"插件状态：{plugin_status}",
         f"头像缓存：{avatar_cache_status}",
+        (
+            "戳一戳响应：开启"
+            if template_data.get("poke_response_enabled")
+            else "戳一戳响应：关闭"
+        ),
+        f"可随机模板：{template_data.get('poke_candidate_count', 0)} 个",
         "",
         "配置参数：",
         f"触发前缀：{trigger_prefix_display}",
@@ -99,6 +105,16 @@ def format_plugin_status_text(template_data: dict[str, Any]) -> str:
         f"可用模板：{template_data.get('total_templates', 0)}",
         f"关键词数：{template_data.get('total_keywords', 0)}",
     ]
+
+    libraries = template_data.get("libraries")
+    if isinstance(libraries, list) and libraries:
+        lines.extend(["", "表情包库："])
+        for lib in libraries:
+            if not isinstance(lib, dict):
+                continue
+            lines.append(
+                f"- {lib.get('name')}：{lib.get('state')}（{lib.get('detail', '')}）"
+            )
     return "\n".join(lines)
 
 
@@ -125,6 +141,53 @@ def format_template_list_text(template_data: dict[str, Any]) -> str:
             f"{item.get('index')}. {item.get('display_name')}{alias_text}{state}"
         )
     return "\n".join(lines)
+
+
+def format_template_text_pages(
+    template_data: dict[str, Any], budget: int = 1800
+) -> list[str]:
+    """把模板目录切成多段纯文本，每段控制在字符预算内。
+
+    上千个模板塞不进一条消息，这里按行累积切页，交给调用方用合并转发
+    分节点发送；平台不支持合并转发时再按页码逐页查看。
+    """
+    templates = template_data.get("templates")
+    if not isinstance(templates, list) or not templates:
+        return ["表情模板库\n暂无可用模板"]
+
+    total = template_data.get("total_templates", 0)
+    keywords = template_data.get("total_keywords", 0)
+    header = f"表情模板库　{total} 个模板 / {keywords} 个关键词"
+
+    pages: list[list[str]] = []
+    current: list[str] = [header, ""]
+    size = len(header) + 1
+    for item in templates:
+        if not isinstance(item, dict):
+            continue
+        line = _format_template_line(item)
+        if size + len(line) + 1 > budget and len(current) > 2:
+            pages.append(current)
+            current = ["表情模板库（续）", ""]
+            size = len(current[0]) + 1
+        current.append(line)
+        size += len(line) + 1
+    if len(current) > 2 or not pages:
+        pages.append(current)
+
+    total_pages = len(pages)
+    return [
+        "\n".join(lines + ["", f"第 {index} / {total_pages} 页"])
+        for index, lines in enumerate(pages, 1)
+    ]
+
+
+def _format_template_line(item: dict[str, Any]) -> str:
+    aliases = str(item.get("aliases") or "")
+    parts = [part for part in aliases.split(" · ") if part][:2]
+    alias_text = f"（{' / '.join(parts)}）" if parts else ""
+    state = " [禁用]" if item.get("disabled") else ""
+    return f"{item.get('index')}. {item.get('display_name')}{alias_text}{state}"
 
 
 def _format_command_lines(commands: list[dict[str, Any]] | Any) -> list[str]:

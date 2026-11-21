@@ -243,6 +243,29 @@ class AvatarCache:
         self._metadata.clear()
         self._save_metadata()
 
+    def purge_cache(self) -> Dict[str, int]:
+        """清空缓存目录下的所有文件。
+
+        与 ``clear_all_cache`` 的区别：那个按元数据里的 key 删，目录里失去
+        元数据的孤儿文件会留下来占空间；这里直接按目录实际内容清。
+        """
+        removed = 0
+        freed = 0
+        if self.cache_dir.is_dir():
+            for path in list(self.cache_dir.iterdir()):
+                if not path.is_file():
+                    continue
+                try:
+                    freed += path.stat().st_size
+                    path.unlink()
+                    removed += 1
+                except OSError as e:
+                    logger.warning(f"删除缓存文件失败 {path}: {e}")
+
+        self._metadata.clear()
+        self._save_metadata()
+        return {"removed": removed, "freed": freed}
+
     def get_cache_stats(self) -> Dict[str, int]:
         """
         获取缓存统计信息

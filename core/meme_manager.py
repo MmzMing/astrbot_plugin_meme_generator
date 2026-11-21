@@ -5,10 +5,10 @@ import random
 import shutil
 from pathlib import Path
 from typing import Optional
-from meme_generator.resources import check_resources
 from astrbot.api import logger
 from astrbot.core.platform import AstrMessageEvent
 
+from .meme_service import MemeService
 from .template_manager import TemplateManager
 from .param_collector import ParamCollector
 from .image_generator import ImageGenerator
@@ -27,20 +27,35 @@ class ResourceNotReadyError(RuntimeError):
 class MemeManager:
     """表情包管理器 - 核心业务逻辑"""
     
-    def __init__(self, config, data_dir: str = None):
+    def __init__(
+        self,
+        config,
+        data_dir: str = None,
+        on_backend_starting=None,
+        on_backend_started=None,
+        on_backend_error=None,
+    ):
         self.config = config
-        self.template_manager = TemplateManager()
-        self.image_generator = ImageGenerator()
+        self.data_dir = Path(data_dir).resolve() if data_dir else Path("data").resolve()
+        self._on_backend_error = on_backend_error
+        self._resource_task: asyncio.Task | None = None
+        self._backend_lock = asyncio.Lock()
+        self._resources_checked = False
+
+        # 所有原生模板加载/生成都在独立 worker 中完成，主进程只保留元数据。
+        self.meme_service = MemeService(
+            self.data_dir,
+            on_starting=on_backend_starting,
+            on_started=on_backend_started,
+        )
+        self.template_manager = TemplateManager(self.meme_service)
+        self.image_generator = ImageGenerator(self.meme_service)
         self.cooldown_manager = CooldownManager(config.cooldown_seconds)
         self.resource_status = ResourceStatus()
-        self.data_dir = Path(data_dir).resolve() if data_dir else None
 
         # 初始化头像缓存和网络工具
         # 使用传入的数据目录，如果没有则使用默认路径
-        if self.data_dir:
-            cache_dir = self.data_dir / "cache" / "meme_avatars"
-        else:
-            cache_dir = Path("data/cache/meme_avatars")  # 默认路径
+        cache_dir = self.data_dir / "cache" / "meme_avatars"
 
         self.avatar_cache = AvatarCache(
             cache_expire_hours=config.cache_expire_hours,
@@ -60,8 +75,14 @@ class MemeManager:
 
         # 初始化资源检查（固定启用）
         logger.info("🎭 表情包插件正在初始化...")
-        # 异步启动资源检查，并在完成后刷新模板
-        asyncio.create_task(self._check_resources_and_refresh())
+        # 异步启动资源检查，并在完成后刷新模板。没有事件循环时不要因此
+        # 让整个插件初始化失败——资源检查只是优化，插件本身还能用。
+        try:
+            self._resource_task = asyncio.create_task(
+                self._check_resources_and_refresh()
+            )
+        except RuntimeError as exc:
+            logger.warning("没有可用的事件循环，跳过启动时的资源检查: %s", exc)
 
         # 启动缓存清理任务
         if config.enable_avatar_cache:
@@ -73,18 +94,21 @@ class MemeManager:
                 pass
 
     async def _check_resources_and_refresh(self):
-        """检查资源并在完成后刷新模板"""
+        """启动 worker、检查资源并刷新模板"""
         self.resource_status.mark_started()
         heartbeat_task = asyncio.create_task(self._log_resource_heartbeat())
         try:
-            # check_resources_in_background only spawns an internal thread and
-            # returns immediately, which made us report resources as ready while
-            # downloads were still running. Execute the blocking checker in
-            # asyncio's worker thread so completion reflects the real state.
-            await asyncio.to_thread(check_resources)
-            await asyncio.to_thread(self._remove_legacy_resources)
-            await self.template_manager.refresh_templates()
-            all_memes = await self.template_manager.get_all_memes()
+            async with self._backend_lock:
+                await self.meme_service.start()
+                await self.template_manager.refresh_templates()
+                all_memes = await self.template_manager.get_all_memes()
+                # 内置资源仍由 Rust worker 的 check_resources 补齐；worker 只有一个，
+                # 不会出现两个 check_resources 并发下载的情况。
+                await self.meme_service.check_resources()
+                await asyncio.to_thread(self._remove_legacy_resources)
+                self._resources_checked = True
+                all_memes = await self.template_manager.get_all_memes()
+
             self.resource_status.mark_ready(len(all_memes))
             if self.resource_status.ready:
                 logger.info(
@@ -95,15 +119,89 @@ class MemeManager:
             else:
                 logger.warning("⚠️ 表情包资源检查完成，但未加载到任何模板")
         except Exception as e:
-            self.resource_status.mark_failed(str(e))
-            logger.error(f"❌ 表情包资源检查失败: {e}")
-            logger.warning("⚠️ 部分表情包模板可能无法正常使用，建议检查网络连接后重启插件")
+            recovered = False
+            if self._on_backend_error is not None:
+                try:
+                    recovered = bool(await self._on_backend_error(e))
+                except Exception as recover_exc:
+                    logger.error("恢复表情包 worker 失败: %s", recover_exc)
+            if recovered:
+                try:
+                    async with self._backend_lock:
+                        await self.template_manager.refresh_templates()
+                        await self.meme_service.check_resources()
+                        await asyncio.to_thread(self._remove_legacy_resources)
+                        self._resources_checked = True
+                        all_memes = await self.template_manager.get_all_memes()
+                    self.resource_status.mark_ready(len(all_memes))
+                    logger.warning(
+                        "⚠️ 已隔离异常外部库，使用内置库启动，共 %d 个模板",
+                        len(all_memes),
+                    )
+                except Exception as recover_exc:
+                    self.resource_status.mark_failed(str(recover_exc))
+                    logger.error("恢复后仍无法加载表情包资源: %s", recover_exc)
+            else:
+                self.resource_status.mark_failed(str(e))
+                logger.error(f"❌ 表情包资源检查失败: {e}")
+                logger.warning("⚠️ 部分表情包模板可能无法正常使用，建议检查网络连接后重试")
         finally:
             heartbeat_task.cancel()
             try:
                 await heartbeat_task
             except (asyncio.CancelledError, Exception):
                 pass
+
+    async def restart_backend(self) -> int:
+        """重启 worker 并刷新模板，返回当前模板总数。"""
+        self._cancel_resource_task()
+        async with self._backend_lock:
+            await self.meme_service.restart()
+            # 首次资源检查若被安装流程打断，这里补完，避免装完库后内置素材缺文件。
+            if not self._resources_checked:
+                await self.meme_service.check_resources()
+                self._resources_checked = True
+            await self.template_manager.refresh_templates()
+            all_memes = await self.template_manager.get_all_memes()
+        self.resource_status.mark_ready(len(all_memes))
+        return len(all_memes)
+
+    async def refresh_backend(self) -> int:
+        """worker 已在运行时只刷新元数据，不重启进程。"""
+        async with self._backend_lock:
+            if not self._resources_checked:
+                await self.meme_service.check_resources()
+                self._resources_checked = True
+            await self.template_manager.refresh_templates()
+            all_memes = await self.template_manager.get_all_memes()
+        self.resource_status.mark_ready(len(all_memes))
+        return len(all_memes)
+
+    async def stop_backend(self) -> None:
+        """停止 worker，安装/卸载动态库前调用以释放文件锁。"""
+        self._cancel_resource_task()
+        async with self._backend_lock:
+            await self.meme_service.stop()
+
+    def _cancel_resource_task(self) -> None:
+        task = self._resource_task
+        self._resource_task = None
+        if task is not None and not task.done():
+            task.cancel()
+
+    async def shutdown(self) -> None:
+        """插件卸载/重载时停止 worker 和后台任务。"""
+        task = self._resource_task
+        self._resource_task = None
+        if task is not None and not task.done():
+            task.cancel()
+        await self.meme_service.stop()
+        if task is not None:
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+        await self.cache_manager.stop_cleanup_task()
 
     def _remove_legacy_resources(self) -> None:
         """Remove resources from the former user-home location after migration."""
@@ -168,6 +266,16 @@ class MemeManager:
                 )
         except asyncio.CancelledError:
             raise
+
+    def clear_avatar_cache(self) -> dict[str, int]:
+        """清空头像缓存，返回删除文件数与释放的字节数。"""
+        stats = self.avatar_cache.purge_cache()
+        logger.info(
+            "已清空头像缓存: %d 个文件 / %.1f KB",
+            stats["removed"],
+            stats["freed"] / 1024,
+        )
+        return stats
 
     async def get_resource_block_message(self, message_str: str) -> str | None:
         keyword = await self.template_manager.find_keyword(
@@ -276,6 +384,25 @@ class MemeManager:
 
         return image
 
+    async def get_poke_candidates(self) -> list:
+        """戳一戳可用的模板。
+
+        戳一戳没有消息可以解析，只能由 ParamCollector 补戳者头像、机器人头像
+        和一段昵称，所以只保留最多 2 张图、最多 1 段文字的模板。外部库加载的
+        模板同样在这个池子里。
+        """
+        candidates = []
+        for meme in await self.template_manager.get_all_memes():
+            params = meme.info.params
+            keywords = list(meme.info.keywords)
+            if self.config.is_template_disabled(meme.key) or any(
+                self.config.is_template_disabled(keyword) for keyword in keywords
+            ):
+                continue
+            if params.min_images <= 2 and params.min_texts <= 1:
+                candidates.append(meme)
+        return candidates
+
     async def generate_random_meme(
         self, event: AstrMessageEvent
     ) -> Optional[tuple[bytes, str]]:
@@ -288,18 +415,7 @@ class MemeManager:
         if block_message:
             raise ResourceNotReadyError(block_message)
 
-        candidates = []
-        for meme in await self.template_manager.get_all_memes():
-            params = meme.info.params
-            keywords = list(meme.info.keywords)
-            if self.config.is_template_disabled(meme.key) or any(
-                self.config.is_template_disabled(keyword) for keyword in keywords
-            ):
-                continue
-            # ParamCollector can supply the sender and bot avatars plus one name.
-            if params.min_images <= 2 and params.min_texts <= 1:
-                candidates.append(meme)
-
+        candidates = await self.get_poke_candidates()
         random.SystemRandom().shuffle(candidates)
         for meme in candidates:
             try:

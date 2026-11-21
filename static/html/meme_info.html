@@ -20,6 +20,7 @@
         <div class="health-grid">
             <article class="health-card {{ 'is-on' if plugin_enabled else 'is-off' }}"><div class="health-top"><span class="signal"></span><b>生成服务</b><em>{{ 'ONLINE' if plugin_enabled else 'OFFLINE' }}</em></div><strong>{{ '正常响应' if plugin_enabled else '已停止' }}</strong><p>控制插件是否处理普通表情生成请求。</p></article>
             <article class="health-card {{ 'is-on' if avatar_cache_enabled else 'is-off' }}"><div class="health-top"><span class="signal"></span><b>头像缓存</b><em>{{ 'ONLINE' if avatar_cache_enabled else 'OFFLINE' }}</em></div><strong>{{ '缓存开启' if avatar_cache_enabled else '缓存关闭' }}</strong><p>缓存开启可减少重复头像下载与等待时间。</p></article>
+            <article class="health-card {{ 'is-on' if poke_response_enabled else 'is-off' }}"><div class="health-top"><span class="signal"></span><b>戳一戳响应</b><em>{{ 'ONLINE' if poke_response_enabled else 'OFFLINE' }}</em></div><strong>{% if poke_response_enabled %}候选 {{ poke_candidate_count }} 个{{ ' · 任意目标' if poke_any_target else '' }}{% else %}未启用{% endif %}</strong><p>开启后戳机器人会随机回一张表情，候选池含外部库模板。</p></article>
         </div>
     </section>
     <section class="manual-section">
@@ -29,6 +30,12 @@
             <article><span>冷却时间</span><strong>{{ cooldown_seconds }}<i>秒</i></strong><small>COOLDOWN</small></article>
             <article><span>生成超时</span><strong>{{ generation_timeout }}<i>秒</i></strong><small>TIMEOUT</small></article>
             <article><span>缓存有效期</span><strong>{{ cache_expire_hours }}<i>时</i></strong><small>CACHE TTL</small></article>
+        </div>
+    </section>
+    <section class="manual-section">
+        <div class="section-label compact"><span>03</span><div><h2>表情包库</h2><p>当前加载的模板来源</p></div></div>
+        <div class="config-board">
+            {% for lib in libraries %}<article><span>{{ lib.name }}</span><strong>{{ lib.state }}</strong><small>{% if lib.count %}{{ lib.count }} 个模板 · {% endif %}{{ lib.detail }}</small></article>{% else %}<article><span>内置</span><strong>数据缺失</strong><small>无法读取库清单</small></article>{% endfor %}
         </div>
     </section>
     <footer class="footer-note"><span>LIVE</span><p>数据来自插件当前运行实例。</p><strong>astrbot_plugin_meme_generator</strong></footer>

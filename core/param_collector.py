@@ -4,9 +4,9 @@ import base64
 import re
 from pathlib import Path
 from typing import Awaitable, Callable, Dict, List, Tuple, Union
-from meme_generator import Meme
-from meme_generator import Image as MemeImage
 from astrbot.api import logger
+
+from .meme_types import MemeImage, WorkerMeme
 from astrbot.core.platform import AstrMessageEvent
 import astrbot.core.message.components as Comp
 from ..utils.platform_utils import PlatformUtils
@@ -27,7 +27,7 @@ class ParamCollector:
             self,
             event: AstrMessageEvent,
             keyword: str,
-            meme: Meme,
+            meme: WorkerMeme,
             keyword_prefix: str = "",
     ) -> Tuple[List[MemeImage], List[str], Dict[str, Union[bool, str, int, float]]]:
         """
